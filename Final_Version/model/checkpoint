@@ -1,2 +1,2 @@
-model_checkpoint_path: "net_13_13_model"
-all_model_checkpoint_paths: "net_13_13_model"
+model_checkpoint_path: "tf_policy_11_11_5_model"
+all_model_checkpoint_paths: "tf_policy_11_11_5_model"

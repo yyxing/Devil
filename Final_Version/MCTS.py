@@ -1,5 +1,8 @@
 import numpy as np
-from policy_value_net import Net
+import policy_value_net
+import time
+import game
+from multiprocessing.dummy import Pool as ThreadPool
 
 """
     蒙特卡洛树搜索
@@ -45,29 +48,34 @@ class Node(object):
     def is_leaf(self):
         return len(self.children) == 0
 
+    def update_value(self, leaf_value):
+        if self.parent:
+            self.parent.update_value(-leaf_value)
+        self.backup(leaf_value)
+
 
 # 蒙特卡洛树
 class MCTS(object):
-    def __init__(self, net: Net):
+    def __init__(self, net):
         self.net = net
         self.board = None
         self.root = None
+        self.mul_process = 16
+        self.pool = ThreadPool(self.mul_process)
+        self.arg = [k for k in range(0, 400, 400 // self.mul_process)]
 
     def search(self, board, node, temp=1e-3):
         self.root = node
         self.board = board
-        for _ in range(1600):
+        # self.reset_pool()
+        # s_time = time.time()
+        for _ in range(400):
             node = self.root
             board = self.board.clone()
             while not node.is_leaf():
                 action, node = node.select()
-                x, y = board.location_to_move(action)
-                board.do_move(x, y)
+                board.do_move(action)
             act_probs, value = self.net.get_value_policy(board)
-            act, probs = map(np.array, zip(*act_probs))
-            if node.parent is None:
-                probs = self.dirichlet_noise(probs)
-            act_probs = zip(act, probs)
             end, winner = board.game_end()
             if not end:
                 node.expand(act_probs)
@@ -75,27 +83,47 @@ class MCTS(object):
                 if winner == -1:
                     value = 0.0
                 else:
-                    value = 1.0 if winner == board.cur_player else -1.0
-            while node is not None:
-                value = -value
-                node.backup(value)
-                node = node.parent
-        action_items = np.zeros(board.size ** 2)
+                    value = 1.0 if winner == board.current_player else -1.0
+            node.update_value(-value)
+        # for _ in self.arg:
+        #     self.pool.apply_async(self.mc, args=())
+        # self.pool.close()
+        # self.pool.join()
+        actions = []
+        times = []
         for action, child in self.root.children.items():
-            action_items[action] = child.N
-        action, pi = self.decision(action_items, temp)
+            actions.append(action)
+            times.append(child.N + 1e-10)
+        action, pi = self.decision(actions, times, temp)
         for act, child in self.root.children.items():
             if action == act:
+                # e_time = time.time()
+                # print(f"Monte Carlo Tree Search takes {(e_time - s_time)} seconds")
                 return action, child, pi
 
-    @staticmethod
-    def dirichlet_noise(probs, eps=0.25, alpha=0.03):
-        return (1 - eps) * probs + eps * np.random.dirichlet(np.full(len(probs), alpha))
+    def reset_pool(self):
+        self.pool = ThreadPool(self.mul_process)
 
     @staticmethod
-    def decision(pi, temperature):
-        pi = (1.0 / temperature) * np.log(pi + 1e-10)
+    def dirichlet_noise(probs, eps=0.25, alpha=0.1):
+        return (1 - eps) * probs + eps * np.random.dirichlet(np.full(len(probs), alpha))
+
+    def decision(self, acts, pi, temperature):
+        pi = (1.0 / temperature) * np.log(pi)
         pi = np.exp(pi - np.max(pi))
         pi /= np.sum(pi)
-        action = np.random.choice(len(pi), p=pi)
+        # pi = self.dirichlet_noise(pi)
+        action = np.random.choice(acts, p=pi)
         return action, pi
+
+# if __name__ == '__main__':
+#     net = policy_value_net.Net()
+#     b = game.Board()
+#     act_probs, value = net.get_value_policy(b)
+#     act, probs = map(np.array, zip(*act_probs))
+#     n = Node(None, None)
+#     mc = MCTS(net)
+#     for i in range(100):
+#         b = game.Board()
+#         n = Node(None, None)
+#         mc.search(b, n)

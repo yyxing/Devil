@@ -1,48 +1,36 @@
 import numpy as np
 import cv2
-from MCTS import *
+import MCTS
 import matplotlib.pyplot as plt
+import policy_value_net
+import copy
 
 
 class Game(object):
     def __init__(self, net=None, eval_net=None):
-        self.size = 13
+        self.size = 11
         self.board = Board(self.size)
         self.grid_size = 35
-        self.next_player = 1
         self.moves = [(-1, -1)]
         self.net = net
         self.eval_net = eval_net
 
-    # def add_move(self, board):
-    #     self.boards.append(board)
-    #     self.next_player = 3 - self.next_player
-    #
-    # def move(self, x, y):
-    #     board_clone = self.boards[-1].board.copy()
-    #     if board_clone[x][y] != 0:
-    #         return
-    #     new_board = Board(board=board_clone)
-    #     new_board.do_move(x, y, self.next_player)
-    #     self.moves.append((x, y))
-    #     self.add_move(new_board)
     # 自对弈 收集数据
     def start_self_play(self):
-        datas, node = [], Node(None, None)
-        mc = MCTS(self.net)
+        datas, node = [], MCTS.Node(None, None)
+        mc = MCTS.MCTS(self.net)
         move_count = 0
         states, mcts_probs, cur_players = [], [], []
         self.init_board()
         while True:
-            if move_count < 8:
+            if move_count < 6:
                 action, next_node, pi = mc.search(self.board, node, temp=1)
             else:
                 action, next_node, pi = mc.search(self.board, node)
             states.append(self.board.get_state())
             mcts_probs.append(pi)
-            cur_players.append(self.board.cur_player)
-            x, y = self.board.location_to_move(action)
-            self.board.do_move(x, y)
+            cur_players.append(self.board.current_player)
+            self.board.do_move(action)
             next_node.parent = None
             node = next_node
             move_count += 1
@@ -64,20 +52,19 @@ class Game(object):
             self.init_board()
             if i % 2 == 0:
                 players = {
-                    'WHITE': (MCTS(self.net), 'cur_net'),
-                    'BLACK': (MCTS(self.eval_net), 'best_net')
+                    'WHITE': (MCTS.MCTS(self.net), 'cur_net'),
+                    'BLACK': (MCTS.MCTS(self.eval_net), 'best_net')
                 }
             else:
                 players = {
-                    'WHITE': (MCTS(self.eval_net), 'best_net'),
-                    'BLACK': (MCTS(self.net), 'cur_net')
+                    'WHITE': (MCTS.MCTS(self.eval_net), 'best_net'),
+                    'BLACK': (MCTS.MCTS(self.net), 'cur_net')
                 }
-            node = Node(None, None)
+            node = MCTS.Node(None, None)
             while True:
-                cur_player = 'BLACK' if self.board.cur_player == 1 else 'WHITE'
+                cur_player = 'BLACK' if self.board.current_player == 1 else 'WHITE'
                 action, next_node, _ = players[cur_player][0].search(self.board, node)
-                x, y = self.board.location_to_move(action)
-                self.board.do_move(x, y)
+                self.board.do_move(action)
 
                 end, winner = self.board.game_end()
                 if end:
@@ -100,7 +87,8 @@ class Game(object):
     def bind_click(self, event, x, y, flags, param):
         if event == cv2.EVENT_LBUTTONDOWN:
             xx, yy = int(round(float(x) / self.grid_size)) - 1, int(round(float(y) / self.grid_size)) - 1
-            self.board.do_move(yy, xx)
+            action = self.board.move_to_location(xx, yy)
+            self.board.do_move(action)
         # if event == cv2.EVENT_RBUTTONDOWN:
         #     self.roll_back()
 
@@ -109,19 +97,20 @@ class Game(object):
 
 
 class Board(object):
-    def __init__(self, size=13, board=None):
+    def __init__(self, size=11, board=None):
         self.size = size
         if board is None:
             self.board = np.zeros((size, size), dtype=np.uint8)
         else:
             self.board = board
+        self.states = {}
         self.invalid_states = []
         self.valid_states = list(range(self.size ** 2))
         self.last_move = (-1, -1)
-        self.cur_player = 1
-        self.next_player = 1
+        self.last_move_action = -1
+        self.current_player = 1
 
-    def show_board(self, grid_size=35, last_move=None):
+    def show_board(self, grid_size=35):
         last_move = self.last_move
         canvas = np.ones(((self.size + 1) * grid_size, (self.size + 1) * grid_size, 3), dtype=np.uint8) * 100
         # 画横线
@@ -134,62 +123,64 @@ class Board(object):
                      thickness=2)
         for x in range(2):
             for y in range(2):
-                cv2.circle(canvas, (4 * grid_size + x * 6 * grid_size, 4 * grid_size + y * 6 * grid_size),
+                cv2.circle(canvas, (3 * grid_size + x * 6 * grid_size, 3 * grid_size + y * 6 * grid_size),
                            int(grid_size / 8), color=(0, 0, 0), thickness=2)
-        cv2.circle(canvas, (7 * grid_size, 7 * grid_size), int(grid_size / 8), color=(0, 0, 0), thickness=2)
+        cv2.circle(canvas, (6 * grid_size, 6 * grid_size), int(grid_size / 8), color=(0, 0, 0), thickness=2)
         for x in range(self.size):
             for y in range(self.size):
                 if self.board[x][y] == 1:
-                    cv2.circle(canvas, ((y + 1) * grid_size, (x + 1) * grid_size), int(grid_size / 2.2),
+                    cv2.circle(canvas, ((x + 1) * grid_size, (y + 1) * grid_size), int(grid_size / 2.2),
                                color=(0, 0, 0), thickness=-1)
                 if self.board[x][y] == 2:
-                    cv2.circle(canvas, ((y + 1) * grid_size, (x + 1) * grid_size), int(grid_size / 2.2),
+                    cv2.circle(canvas, ((x + 1) * grid_size, (y + 1) * grid_size), int(grid_size / 2.2),
                                color=(200, 200, 200), thickness=-1)
         if last_move is not None and 0 <= last_move[0] <= self.size and 0 <= last_move[1] <= self.size:
             x, y = last_move[0], last_move[1]
             if self.board[x][y] == 1:
-                cv2.circle(canvas, ((y + 1) * grid_size, (x + 1) * grid_size), int(grid_size / 3),
+                cv2.circle(canvas, ((x + 1) * grid_size, (y + 1) * grid_size), int(grid_size / 3),
                            color=(200, 200, 200), thickness=2)
             if self.board[x][y] == 2:
-                cv2.circle(canvas, ((y + 1) * grid_size, (x + 1) * grid_size), int(grid_size / 3), color=(0, 0, 0),
+                cv2.circle(canvas, ((x + 1) * grid_size, (y + 1) * grid_size), int(grid_size / 3), color=(0, 0, 0),
                            thickness=2)
 
         return canvas
 
     def get_state(self):
         cur_states = np.zeros((4, self.size, self.size))
-        cur_states[0][np.where(self.board == 1)] = 1
-        cur_states[1][np.where(self.board == 2)] = 1
-        cur_states[2][self.last_move[0]][self.last_move[1]] = 1
-
-        cur_states[3] = np.full((self.size, self.size), 2 - self.cur_player)
-        return cur_states
+        if self.states:
+            moves, players = np.array(list(zip(*self.states.items())))
+            move_curr = moves[players == self.current_player]
+            move_oppo = moves[players != self.current_player]
+            cur_states[0][move_curr // self.size, move_curr % self.size] = 1
+            cur_states[1][move_oppo // self.size, move_oppo % self.size] = 1
+            cur_states[2][self.last_move_action // self.size][self.last_move_action % self.size] = 1
+            cur_states[3] = np.full((self.size, self.size), 2 - self.current_player)
+        return cur_states[:, ::-1, :]
 
     def move_to_location(self, x, y):
-        location = y * self.size + x
+        location = x * self.size + y
         return location
 
     def location_to_move(self, action):
-        x = action % self.size
-        y = action // self.size
-        return x, y
+        h = action // self.size
+        w = action % self.size
+        return h, w
 
     def clone(self):
-        c_board = Board(self.size)
-        c_board.invalid_states = self.invalid_states.copy()
-        c_board.valid_states = self.valid_states.copy()
-        c_board.board = self.board.copy()
+        c_board = copy.deepcopy(self)
         return c_board
 
-    def do_move(self, x, y):
-        if self.board[x, y] != 0:
-            return
-        self.board[x][y] = self.next_player
-        self.cur_player = self.next_player
-        self.last_move = (x, y)
-        self.next_player = 3 - self.next_player
-        self.invalid_states.append(self.move_to_location(x, y))
-        self.valid_states.remove(self.move_to_location(x, y))
+    def do_move(self, action):
+        h, w = self.location_to_move(action)
+        # if self.board[h, w] != 0:
+        #     return
+        self.board[h][w] = self.current_player
+        self.states[action] = self.current_player
+        self.last_move = (h, w)
+        self.last_move_action = action
+        self.current_player = 3 - self.current_player
+        self.invalid_states.append(action)
+        self.valid_states.remove(action)
 
     def _get_piece(self, x, y):
         if 0 <= x < self.size and 0 <= y < self.size:
@@ -197,7 +188,9 @@ class Board(object):
         return 0
 
     def has_winner(self):
-        move_color = self.cur_player
+        if len(self.invalid_states) < 9:
+            return False, -1
+        move_color = self.states[self.last_move_action]
         x, y = self.last_move
         for i in range(x - 4, x + 5):
             if self._get_piece(i, y) == \
@@ -244,16 +237,21 @@ class Board(object):
 
 
 if __name__ == '__main__':
-    net = Net()
-    eval_net = Net()
-    game = Game(net, eval_net)
+    # net = policy_value_net.Net()
+    # eval_net = policy_value_net.Net()
+    game = Game()
     board_img = game.get_cur_img()
     cv2.imshow('board_img', board_img)
+    cv2.waitKey(33)
     cv2.setMouseCallback('board_img', game.bind_click)
     while True:
         board_img = game.get_cur_img()
         cv2.imshow('board_img', board_img)
+        cv2.waitKey(33)
         end, winner = game.board.game_end()
+        board_img = game.get_cur_img()
+        cv2.imshow('board_img', board_img)
+        cv2.waitKey(33)
         if end:
             if winner == 1:
                 cv2.putText(board_img, "Black PLayer Win!",
@@ -275,4 +273,3 @@ if __name__ == '__main__':
                 cv2.imshow('board_img', board_img)
                 cv2.waitKey(0)
                 break
-        cv2.waitKey(33)

@@ -1,26 +1,26 @@
 import random
 import numpy as np
 from collections import deque
-from game import Game
-from policy_value_net import Net
+import game
+import policy_value_net
 import time
 
 
 class Train(object):
     def __init__(self):
-        self.net = Net()
-        self.eval_net = Net()
-        self.game = Game(self.net, self.eval_net)
+        self.net = policy_value_net.Net()
+        self.eval_net = policy_value_net.Net()
+        self.game = game.Game(self.net, self.eval_net)
         self.lr = 2e-3
         self.lr_multiplier = 1.0
         self.temp = 1.0
-        self.size = 13
+        self.size = 11
         self.c_puct = 5
         self.buffer_size = 10000
-        self.batch_size = 512  # mini-batch size for training
+        self.batch_size = 512
         self.data_buffer = deque(maxlen=self.buffer_size)
         self.play_batch_size = 1
-        self.epochs = 5  # num of train_steps for each update
+        self.epochs = 5
         self.kl_targ = 0.02
         self.check_freq = 50
         self.game_batch_num = 5000
@@ -28,19 +28,19 @@ class Train(object):
         self.losses = []
         self.entropy = []
 
-    # 取样
+    # 扩展数据
     def sample(self, data):
         extend_data = []
         for state, mcts_porb, winner in data:
             for i in [1, 2, 3, 4]:
-                # rotate counterclockwise
+                # 逆时针旋转扩增数据
                 equi_state = np.array([np.rot90(s, i) for s in state])
                 equi_mcts_prob = np.rot90(np.flipud(
                     mcts_porb.reshape(self.size, self.size)), i)
                 extend_data.append((equi_state,
                                     np.flipud(equi_mcts_prob).flatten(),
                                     winner))
-                # flip horizontally
+                # 水平翻转扩增数据
                 equi_state = np.array([np.fliplr(s) for s in equi_state])
                 equi_mcts_prob = np.fliplr(equi_mcts_prob)
                 extend_data.append((equi_state,
@@ -65,6 +65,7 @@ class Train(object):
         mcts_probs_batch = [data[1] for data in mini_batch]
         score_batch = [data[2] for data in mini_batch]
         old_probs, old_v = self.net.policy_value_by_batch(state_batch)
+        # kl散度 判断更新完的网络对于局面的预估和未更新之前对于网络预估的差值
         for i in range(self.epochs):
             loss, entropy = self.net.train_step(state_batch, score_batch, mcts_probs_batch,
                                                 self.lr * self.lr_multiplier)
@@ -73,8 +74,9 @@ class Train(object):
                     np.log(old_probs + 1e-10) - np.log(new_probs + 1e-10)),
                                 axis=1)
                          )
-            if kl > self.kl_targ * 4:  # early stopping if D_KL diverges badly
+            if kl > self.kl_targ * 4:
                 break
+        # 如果kl散度过大 降低学习率 反之增加
         if kl > self.kl_targ * 2 and self.lr_multiplier > 0.1:
             self.lr_multiplier /= 1.5
         elif kl < self.kl_targ / 2 and self.lr_multiplier < 10:
@@ -123,6 +125,8 @@ class Train(object):
                         # update the best_policy
                         self.net.saver.save(self.net.sess, self.net.model_path)
                         self.eval_net.saver.restore(self.eval_net.sess, self.net.model_path)
+                if (i + 1) % 10 == 0:
+                    self.net.saver.save(self.net.sess, self.net.model_path)
                 e_time = time.time()
                 print(f"each batch takes {(e_time - s_time)} seconds")
         except KeyboardInterrupt:
